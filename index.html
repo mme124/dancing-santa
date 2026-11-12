@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dancing-santa</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #111e23;
+      color: #f8f4e9;
+      font: 16px/1.55 system-ui, sans-serif;
+    }
+    main { width: min(100%, 480px); }
+    h1 { margin: 0; font-size: clamp(2rem, 7vw, 3rem); }
+    p { margin: 0.25rem 0 1rem; color: #c4d4d1; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background:
+        radial-gradient(circle at 16% 24%, #d2ebe1 0 2px, transparent 3px),
+        radial-gradient(circle at 83% 19%, #d2ebe1 0 2px, transparent 3px),
+        radial-gradient(circle at 11% 54%, #d2ebe1 0 1px, transparent 2px),
+        radial-gradient(circle at 88% 52%, #d2ebe1 0 1px, transparent 2px),
+        radial-gradient(ellipse 105% 29% at 50% 106%, #dbe9df 99%, transparent),
+        radial-gradient(ellipse at 50% 40%, #3b6b68, #1d4145 72%);
+      border: 1px solid #42736f;
+      border-radius: 24px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    button, select {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font: inherit;
+    }
+    button { background: #ffda8d; color: #2f2419; cursor: pointer; font-weight: 700; }
+    button:disabled, select:disabled { opacity: 0.6; }
+    select { background: #254448; color: #fff; }
+    input[type="range"] { accent-color: #ffda8d; }
+    #status { margin-top: 12px; }
+    .mood-panel {
+      margin-top: 24px;
+      padding: 16px;
+      border: 1px solid #42736f;
+      border-radius: 16px;
+      background: #192e33;
+    }
+    .mood-panel h2 { margin: 0 0 4px; font-size: 1.15rem; }
+    .mood-panel input { max-width: 100%; font: inherit; }
+    .mood-panel input::file-selector-button { padding: 4px 8px; }
+    .mood-panel p:last-child { margin: 8px 0 0; }
+    .mood-panel audio { display: block; width: 100%; margin-top: 12px; }
+    .mood-panel audio[hidden] { display: none; }
+    #song-name { overflow-wrap: anywhere; }
+    a { color: #ffda8d; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>dancing-santa</h1>
+    <p>음악을 넣어 감상하거나, 내장 리듬으로 산타를 춤추게 해 보세요.</p>
+    <canvas id="stage" width="800" height="640" role="img" aria-label="눈 덮인 무대의 3D 산타"></canvas>
+    <div class="controls">
+      <label for="tempo">템포</label>
+      <select id="tempo">
+        <option value="80">80 BPM</option>
+        <option value="110" selected>110 BPM</option>
+        <option value="140">140 BPM</option>
+      </select>
+      <button id="play" type="button">내장 리듬 재생</button>
+    </div>
+    <div class="controls">
+      <label for="view-angle">보기 각도</label>
+      <input id="view-angle" type="range" min="-180" max="180" value="-18">
+    </div>
+    <p id="status" role="status">내장 리듬 · 4박자</p>
+    <a href="joint-demo.html">산타 관절 테스트 열기</a>
+    <section class="mood-panel" aria-labelledby="mood-title">
+      <h2 id="mood-title">음악 넣기</h2>
+      <p id="mood-help">음악 파일을 고른 뒤 아래 플레이어에서 재생하세요. 분위기도 함께 분석해요.</p>
+      <input id="song" type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
+        aria-label="재생할 음악 파일" aria-describedby="mood-help">
+      <p id="song-name" role="status">선택한 음악이 없어요.</p>
+      <audio id="song-player" controls preload="metadata" hidden aria-label="선택한 음악 재생"></audio>
+      <p id="song-error" role="status"></p>
+      <p id="mood-result" role="status">차분함 · 경쾌함 · 활기참</p>
+    </section>
+  </main>
+  <script src="santa.js"></script>
+  <script src="mood.js"></script>
+  <script>
+    const canvas = document.querySelector('#stage');
+    const viewAngle = document.querySelector('#view-angle');
+    const tempo = document.querySelector('#tempo');
+    const play = document.querySelector('#play');
+    const status = document.querySelector('#status');
+    const idleStatus = status.textContent;
+    let audio;
+    let track;
+    let drawSanta;
+    let playbackRequest = 0;
+
+    function pose(sway, bounce) {
+      drawSanta(sway, bounce, Number(viewAngle.value) * Math.PI / 180);
+    }
+
+    function note(output, time, pitch, volume, duration, type = 'sine', endPitch = pitch) {
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(pitch, time);
+      oscillator.frequency.exponentialRampToValueAtTime(endPitch, time + duration);
+      gain.gain.setValueAtTime(volume, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+      oscillator.connect(gain).connect(output);
+      oscillator.start(time);
+      oscillator.stop(time + duration);
+      oscillator.onended = () => gain.disconnect();
+    }
+
+    function schedule() {
+      const now = audio.currentTime;
+      // Skip expired beats if a background tab delayed the scheduler.
+      track.nextBeat = Math.max(track.nextBeat, Math.ceil((now - track.start) / track.beatLength));
+      while (track.start + track.nextBeat * track.beatLength < now + 0.12) {
+        const time = track.start + track.nextBeat * track.beatLength;
+        const count = track.nextBeat % 4;
+        if (count % 2 === 0) note(track.output, time, 140, 0.36, 0.16, 'sine', 45);
+        note(track.output, time, [523.25, 659.25, 783.99, 659.25][count], 0.07, 0.18, 'triangle');
+        track.nextBeat++;
+      }
+    }
+
+    function animate() {
+      const beat = Math.max(0, (audio.currentTime - track.start) / track.beatLength);
+      const sway = Math.sin(beat * Math.PI / 2);
+      const bounce = (1 + Math.cos(beat * Math.PI * 2)) / 2;
+      pose(sway, bounce);
+      track.frame = requestAnimationFrame(animate);
+    }
+
+    function stop() {
+      clearInterval(track.timer);
+      cancelAnimationFrame(track.frame);
+      track.output.disconnect();
+      track = undefined;
+      pose(0, 0);
+      play.textContent = '내장 리듬 재생';
+      tempo.disabled = false;
+      status.textContent = idleStatus;
+    }
+
+    play.addEventListener('click', async () => {
+      const request = ++playbackRequest;
+      if (track) {
+        stop();
+        return;
+      }
+      songPlayer.pause();
+      play.disabled = true;
+      try {
+        audio ??= new AudioContext();
+        await audio.resume();
+        if (request !== playbackRequest) return;
+        const output = audio.createGain();
+        output.connect(audio.destination);
+        track = { output, start: audio.currentTime + 0.08, beatLength: 60 / Number(tempo.value), nextBeat: 0 };
+        schedule();
+        track.timer = setInterval(schedule, 25);
+        track.frame = requestAnimationFrame(animate);
+        tempo.disabled = true;
+        play.textContent = '내장 리듬 정지';
+        status.textContent = `내장 리듬 재생 중 · ${tempo.value} BPM`;
+      } catch {
+        if (track) stop();
+        status.textContent = '오디오를 시작할 수 없어요. 브라우저의 오디오 설정을 확인해 주세요.';
+      } finally {
+        play.disabled = false;
+      }
+    });
+
+    viewAngle.addEventListener('input', () => {
+      if (!track && drawSanta) pose(0, 0);
+    });
+
+    try {
+      drawSanta = createSantaStage(canvas);
+      pose(0, 0);
+    } catch {
+      play.disabled = true;
+      viewAngle.disabled = true;
+      status.textContent = '이 브라우저에서 3D 무대를 열 수 없어요. WebGL을 지원하는 브라우저에서 열어 주세요.';
+    }
+
+    const song = document.querySelector('#song');
+    const songPlayer = document.querySelector('#song-player');
+    const songName = document.querySelector('#song-name');
+    const songError = document.querySelector('#song-error');
+    const moodResult = document.querySelector('#mood-result');
+    let songUrl;
+    let analysisRequest = 0;
+
+    songPlayer.addEventListener('play', () => {
+      ++playbackRequest;
+      if (track) stop();
+    });
+    songPlayer.addEventListener('error', () => {
+      if (songPlayer.error) {
+        songError.textContent = '이 음악을 재생할 수 없어요. 다른 음악 파일을 골라 주세요.';
+      }
+    });
+
+    song.addEventListener('change', async () => {
+      const request = ++analysisRequest;
+      const file = song.files[0];
+      ++playbackRequest;
+      if (track) stop();
+      songPlayer.pause();
+      songPlayer.removeAttribute('src');
+      songPlayer.load();
+      if (songUrl) URL.revokeObjectURL(songUrl);
+      songUrl = undefined;
+      songPlayer.hidden = true;
+      songError.textContent = '';
+      if (!file) {
+        songName.textContent = '선택한 음악이 없어요.';
+        moodResult.textContent = '차분함 · 경쾌함 · 활기참';
+        return;
+      }
+      songUrl = URL.createObjectURL(file);
+      songPlayer.src = songUrl;
+      songPlayer.hidden = false;
+      songName.textContent = file.name;
+      if (file.size > 30 * 1024 * 1024) {
+        moodResult.textContent = '분위기 분석은 30 MiB 이하 파일을 지원해요.';
+        return;
+      }
+      moodResult.textContent = '노래의 강세를 분석하는 중이에요.';
+      try {
+        const decoder = new OfflineAudioContext(1, 1, 12000);
+        const buffer = await decoder.decodeAudioData(await file.arrayBuffer());
+        if (request !== analysisRequest) return;
+        const result = estimateSongMood(buffer);
+        moodResult.textContent = result.unavailable ??
+          `분위기 추정 · ${result.mood} (초당 강세 ${result.accentsPerSecond.toFixed(1)}회, 평균 상승 ${result.averageRise.toFixed(1)} dB)`;
+      } catch {
+        if (request === analysisRequest) {
+          moodResult.textContent = '이 파일을 읽을 수 없어요. 브라우저에서 지원하는 다른 음악 파일을 골라 주세요.';
+        }
+      }
+    });
+  </script>
+</body>
+</html>

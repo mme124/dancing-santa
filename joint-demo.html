@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dancing-santa · Joint Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: #111e23; color: #f8f4e9; font: 16px/1.55 system-ui, sans-serif; }
+    main { max-width: 960px; margin: auto; }
+    a { color: #ffda8d; }
+    h1 { margin: 16px 0; font-size: 1.8rem; }
+    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; align-items: start; }
+    canvas { display: block; width: 100%; height: auto; border-radius: 24px; background: radial-gradient(ellipse at 50% 40%, #3b6b68, #1d4145 72%); }
+    .panel { padding: 20px; border: 1px solid #42736f; border-radius: 16px; }
+    label { display: block; margin: 12px 0 4px; }
+    input[type="range"], select { width: 100%; accent-color: #ffda8d; }
+    button, select { padding: 8px 12px; border-radius: 8px; border: 0; font: inherit; }
+    button { background: #ffda8d; color: #2f2419; cursor: pointer; }
+    select { background: #254448; color: #fff; }
+    .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    p { color: #c4d4d1; }
+    pre { overflow: auto; padding: 16px; border: 1px solid #42736f; border-radius: 12px; font-size: 13px; }
+    @media (max-width: 700px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <a href="index.html">음악 데모로 돌아가기</a>
+    <h1>산타 관절 테스트</h1>
+    <div class="layout">
+      <canvas id="stage" width="800" height="640" role="img" aria-label="관절별 회전을 확인하는 3D 산타"></canvas>
+      <div class="panel">
+        <label for="joint">움직일 관절</label>
+        <select id="joint">
+          <option value="leftArm">왼쪽 어깨</option>
+          <option value="rightArm">오른쪽 어깨</option>
+          <option value="leftElbow">왼쪽 팔꿈치</option>
+          <option value="rightElbow">오른쪽 팔꿈치</option>
+          <option value="leftLeg">왼쪽 고관절</option>
+          <option value="rightLeg">오른쪽 고관절</option>
+          <option value="leftKnee">왼쪽 무릎</option>
+          <option value="rightKnee">오른쪽 무릎</option>
+          <option value="torso">몸통</option>
+          <option value="head">머리</option>
+        </select>
+        <p>왼쪽·오른쪽은 산타 기준이에요. 관절을 바꿔도 설정한 자세가 유지돼요.</p>
+        <p>팔이 몸통에 닿으면 어깨 각도를 자동으로 벌려요. 팔꿈치와 무릎은 X축으로 굽힐 수 있어요.</p>
+        <label for="x">X 회전 <output id="x-value" for="x">0°</output></label>
+        <input id="x" type="range" min="-90" max="90" value="0">
+        <label for="y">Y 회전 <output id="y-value" for="y">0°</output></label>
+        <input id="y" type="range" min="-90" max="90" value="0">
+        <label for="z">Z 회전 <output id="z-value" for="z">0°</output></label>
+        <input id="z" type="range" min="-90" max="90" value="0">
+        <label for="turn">보기 각도</label>
+        <input id="turn" type="range" min="-180" max="180" value="-18">
+        <div class="buttons">
+          <button id="frames" type="button">프레임 데이터 재생</button>
+          <button id="reset" type="button">기본 자세</button>
+        </div>
+        <p id="status" role="status">관절을 고르고 회전값을 조절해 보세요.</p>
+      </div>
+    </div>
+    <p>현재 포즈 데이터 · 회전 단위는 라디안</p>
+    <pre id="pose-data" aria-label="현재 포즈 JSON"></pre>
+  </main>
+  <script src="santa.js"></script>
+  <script>
+    const joint = document.querySelector('#joint');
+    const turn = document.querySelector('#turn');
+    const framesButton = document.querySelector('#frames');
+    const status = document.querySelector('#status');
+    const axes = ['x', 'y', 'z'];
+    const jointNames = ['leftArm', 'rightArm', 'leftLeg', 'rightLeg', 'torso', 'head',
+      'leftElbow', 'rightElbow', 'leftKnee', 'rightKnee'];
+    let pose = { joints: {} };
+    let drawSanta;
+    let animation;
+    let start;
+
+    // A sample AI-style sequence, sampled at 30 frames/second for three seconds.
+    const frames = Array.from({ length: 90 }, (_, index) => {
+      const wave = Math.sin(index / 90 * Math.PI * 2);
+      return { time: index / 30, pose: { joints: {
+        leftArm: { z: wave * 0.8 },
+        rightArm: { x: wave * 0.7 },
+        leftLeg: { x: Math.max(0, wave) * -0.6 },
+        rightLeg: { x: Math.max(0, -wave) * -0.6 },
+        leftElbow: { x: -0.7 - wave * 0.5 },
+        rightElbow: { x: -0.7 + wave * 0.5 },
+        leftKnee: { x: Math.max(0, wave) * 0.9 },
+        rightKnee: { x: Math.max(0, -wave) * 0.9 },
+        torso: { z: wave * 0.12 },
+        head: { y: wave * 0.4 },
+      } } };
+    });
+
+    function render() {
+      pose = drawSanta.drawPose(pose, Number(turn.value) * Math.PI / 180);
+      const angles = pose.joints[joint.value] ?? {};
+      const elbow = joint.value.endsWith('Elbow');
+      const knee = joint.value.endsWith('Knee');
+      for (const axis of axes) {
+        const degrees = Math.round((angles[axis] ?? 0) * 180 / Math.PI);
+        const slider = document.querySelector('#' + axis);
+        slider.disabled = (elbow || knee) && axis !== 'x';
+        slider.min = axis === 'x' && knee ? 0 : axis === 'x' && elbow ? -135 : -120;
+        slider.max = axis === 'x' && elbow ? 0 : axis === 'x' && knee ? 135 : 120;
+        slider.value = degrees;
+        document.querySelector('#' + axis + '-value').textContent = degrees + '°';
+      }
+      document.querySelector('#pose-data').textContent = JSON.stringify(pose, null, 2);
+    }
+
+    function stopFrames() {
+      cancelAnimationFrame(animation);
+      animation = undefined;
+      start = undefined;
+      framesButton.textContent = '프레임 데이터 재생';
+    }
+
+    function animate(time) {
+      start ??= time;
+      const index = Math.floor((time - start) / 1000 * 30) % frames.length;
+      const frame = frames[index];
+      // Copy the frame so manual edits cannot change the source sequence.
+      pose = { joints: {} };
+      for (const name of jointNames) pose.joints[name] = { ...frame.pose.joints[name] };
+      render();
+      status.textContent = '프레임 데이터 재생 중 · ' + (index + 1) + '/' + frames.length;
+      animation = requestAnimationFrame(animate);
+    }
+
+    for (const axis of axes) {
+      document.querySelector('#' + axis).addEventListener('input', event => {
+        stopFrames();
+        pose.joints[joint.value] ??= {};
+        pose.joints[joint.value][axis] = Number(event.target.value) * Math.PI / 180;
+        status.textContent = '수동 관절 조절';
+        render();
+      });
+    }
+    joint.addEventListener('change', render);
+    turn.addEventListener('input', render);
+    document.querySelector('#reset').addEventListener('click', () => {
+      stopFrames();
+      pose = { joints: {} };
+      status.textContent = '기본 자세';
+      render();
+    });
+    framesButton.addEventListener('click', () => {
+      if (animation !== undefined) {
+        stopFrames();
+        status.textContent = '프레임 재생 정지';
+      } else {
+        framesButton.textContent = '프레임 재생 정지';
+        animation = requestAnimationFrame(animate);
+      }
+    });
+
+    try {
+      drawSanta = createSantaStage(document.querySelector('#stage'));
+      render();
+    } catch {
+      for (const control of document.querySelectorAll('button, select, input')) control.disabled = true;
+      status.textContent = '3D 무대를 열 수 없어요. WebGL을 지원하는 브라우저에서 열어 주세요.';
+    }
+  </script>
+</body>
+</html>
